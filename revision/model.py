@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import base64
 import json
@@ -10,7 +10,7 @@ from typing import Any
 
 from openai import OpenAI
 
-from revision.prompts import GENERATE_PAGE_PROMPT
+from revision.prompts import CRITIQUE_PROMPT, GENERATE_PAGE_PROMPT, REPAIR_PROMPT
 
 
 DEFAULT_MODEL = "gpt-5.6-luna"
@@ -20,6 +20,12 @@ DEFAULT_MODEL = "gpt-5.6-luna"
 class GeneratedCode:
     html: str
     css: str
+
+
+@dataclass(frozen=True)
+class Critique:
+    summary: str
+    issues: list[dict[str, Any]]
 
 
 class ModelResponseError(RuntimeError):
@@ -54,6 +60,51 @@ class OpenAIModel:
 
         return parse_generated_code(response.output_text)
 
+    def critique(self, target_image_path: Path, current_image_path: Path, code: GeneratedCode) -> Critique:
+        target_image_url = image_to_data_url(target_image_path)
+        current_image_url = image_to_data_url(current_image_path)
+        code_context = json.dumps({"html": code.html, "css": code.css}, ensure_ascii=True)
+
+        response = self.client.responses.create(
+            model=self.model,
+            input=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": CRITIQUE_PROMPT},
+                        {"type": "input_text", "text": f"Current generated code:\n{code_context}"},
+                        {"type": "input_text", "text": "Target screenshot:"},
+                        {"type": "input_image", "image_url": target_image_url, "detail": "high"},
+                        {"type": "input_text", "text": "Current rendered screenshot:"},
+                        {"type": "input_image", "image_url": current_image_url, "detail": "high"},
+                    ],
+                }
+            ],
+        )
+
+        return parse_critique(response.output_text)
+
+    def repair(self, code: GeneratedCode, critique: Critique) -> GeneratedCode:
+        payload = {
+            "current_code": {"html": code.html, "css": code.css},
+            "critique": {"summary": critique.summary, "issues": critique.issues},
+        }
+
+        response = self.client.responses.create(
+            model=self.model,
+            input=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": REPAIR_PROMPT},
+                        {"type": "input_text", "text": json.dumps(payload, ensure_ascii=True)},
+                    ],
+                }
+            ],
+        )
+
+        return parse_generated_code(response.output_text)
+
 
 def image_to_data_url(path: Path) -> str:
     path = path.resolve()
@@ -81,6 +132,24 @@ def parse_generated_code(text: str) -> GeneratedCode:
         raise ModelResponseError("Model response did not include a css string.")
 
     return GeneratedCode(html=html.strip(), css=css.strip())
+
+
+def parse_critique(text: str) -> Critique:
+    payload = parse_json_object(text)
+    return critique_from_dict(payload)
+
+
+def critique_from_dict(payload: dict[str, Any]) -> Critique:
+    summary = payload.get("summary", "")
+    issues = payload.get("issues")
+
+    if not isinstance(summary, str):
+        raise ModelResponseError("Critique response summary must be a string.")
+
+    if not isinstance(issues, list):
+        raise ModelResponseError("Critique response must include an issues list.")
+
+    return Critique(summary=summary.strip(), issues=issues)
 
 
 def parse_json_object(text: str) -> dict[str, Any]:

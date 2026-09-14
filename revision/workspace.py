@@ -1,8 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
-from revision.model import GeneratedCode
+from revision.model import Critique, GeneratedCode, critique_from_dict
 
 
 SAMPLE_HTML = """<!doctype html>
@@ -122,3 +124,25 @@ class Workspace:
         self.iterations_dir.mkdir(parents=True, exist_ok=True)
         (self.iterations_dir / f"iteration_{iteration}.html").write_text(code.html, encoding="utf-8")
         (self.iterations_dir / f"iteration_{iteration}.css").write_text(code.css, encoding="utf-8")
+
+    def read_generated_code(self) -> GeneratedCode:
+        return GeneratedCode(
+            html=self.generated_html_path.read_text(encoding="utf-8"),
+            css=self.generated_css_path.read_text(encoding="utf-8"),
+        )
+
+    def read_critique(self, path: Path) -> Critique:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"Critique JSON must be an object: {path}")
+        return critique_from_dict(payload)
+
+    def save_critique(self, iteration: int, critique: Critique) -> Path:
+        self.iterations_dir.mkdir(parents=True, exist_ok=True)
+        path = self.iterations_dir / f"iteration_{iteration}_critique.json"
+        payload: dict[str, Any] = {
+            "summary": critique.summary,
+            "issues": critique.issues,
+        }
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return path
