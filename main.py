@@ -30,7 +30,7 @@ def parse_viewport(value: str) -> tuple[int, int]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Generate, render, critique, or repair a ReVision page.")
+    parser = argparse.ArgumentParser(description="Generate, render, critique, repair, loop, or evaluate a ReVision page.")
     parser.add_argument(
         "--target",
         type=Path,
@@ -83,6 +83,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help="Iteration number to save for --repair output. Defaults to 1.",
     )
+    parser.add_argument(
+        "--loop",
+        type=int,
+        default=None,
+        help="Run Phase 4 from scratch with N repair cycles. Example: --loop 3 creates iteration_0 through iteration_3.",
+    )
+    parser.add_argument(
+        "--evaluate",
+        action="store_true",
+        help="Run Phase 5 local pixel-level evaluation over output/iterations/iteration_*.png. Requires --target.",
+    )
     return parser
 
 
@@ -93,6 +104,26 @@ def main() -> None:
     workspace = Workspace(Path.cwd())
     viewport = resolve_viewport(args.target, args.viewport)
     renderer = BrowserRenderer(viewport=viewport)
+
+    if args.evaluate:
+        if args.target is None:
+            raise RuntimeError("--evaluate requires --target.")
+        evaluation_path = evaluate_existing_iterations(target_path=args.target, workspace=workspace)
+        print(f"Evaluation: {evaluation_path}")
+        return
+
+    if args.loop is not None:
+        if args.target is None:
+            raise RuntimeError("--loop requires --target.")
+        run_agent_loop(
+            target_path=args.target,
+            repair_cycles=args.loop,
+            workspace=workspace,
+            renderer=renderer,
+            model_name=args.model,
+            viewport=viewport,
+        )
+        return
 
     if args.repair is not None:
         html_path, screenshot_path = repair_iteration(
@@ -118,6 +149,7 @@ def main() -> None:
             code=workspace.read_generated_code(),
             workspace=workspace,
             model_name=args.model,
+            iteration=0,
         )
         print(f"Viewport: {viewport[0]}x{viewport[1]}")
         print(f"Critique: {critique_path}")
@@ -143,6 +175,7 @@ def main() -> None:
                 code=workspace.read_generated_code(),
                 workspace=workspace,
                 model_name=args.model,
+                iteration=0,
             )
             print(f"Critique: {critique_path}")
         return
@@ -177,16 +210,7 @@ def generate_initial_iteration(
 ) -> tuple[Path, Path]:
     model = OpenAIModel(model=model_name)
     code = model.generate_page(target_path)
-
-    html_path = workspace.write_generated_code(code)
-    workspace.save_iteration_code(iteration=0, code=code)
-
-    screenshot_path = renderer.capture(
-        html_path=html_path,
-        output_path=output_path or workspace.iterations_dir / "iteration_0.png",
-    )
-
-    return html_path, screenshot_path
+    return save_and_render_iteration(code=code, iteration=0, workspace=workspace, renderer=renderer, output_path=output_path)
 
 
 def critique_iteration(
@@ -195,10 +219,11 @@ def critique_iteration(
     code: GeneratedCode,
     workspace: Workspace,
     model_name: str | None,
+    iteration: int,
 ) -> Path:
     model = OpenAIModel(model=model_name)
     critique = model.critique(target_image_path=target_path, current_image_path=current_path, code=code)
-    return workspace.save_critique(iteration=0, critique=critique)
+    return workspace.save_critique(iteration=iteration, critique=critique)
 
 
 def repair_iteration(
@@ -218,8 +243,76 @@ def repair_iteration(
     model = OpenAIModel(model=model_name)
     repaired_code = model.repair(code=code, critique=critique)
 
-    html_path = workspace.write_generated_code(repaired_code)
-    workspace.save_iteration_code(iteration=iteration, code=repaired_code)
+    return save_and_render_iteration(
+        code=repaired_code,
+        iteration=iteration,
+        workspace=workspace,
+        renderer=renderer,
+        output_path=output_path,
+    )
+
+
+def run_agent_loop(
+    target_path: Path,
+    repair_cycles: int,
+    workspace: Workspace,
+    renderer: BrowserRenderer,
+    model_name: str | None,
+    viewport: tuple[int, int],
+) -> None:
+    if repair_cycles < 0:
+        raise RuntimeError("--loop must be 0 or greater.")
+
+    model = OpenAIModel(model=model_name)
+    code = model.generate_page(target_path)
+    html_path, screenshot_path = save_and_render_iteration(
+        code=code,
+        iteration=0,
+        workspace=workspace,
+        renderer=renderer,
+        output_path=None,
+    )
+
+    print(f"Viewport: {viewport[0]}x{viewport[1]}")
+    print(f"Iteration 0 rendered: {screenshot_path}")
+
+    for iteration in range(repair_cycles):
+        critique = model.critique(target_image_path=target_path, current_image_path=screenshot_path, code=code)
+        critique_path = workspace.save_critique(iteration=iteration, critique=critique)
+        print(f"Iteration {iteration} critique: {critique_path}")
+
+        code = model.repair(code=code, critique=critique)
+        html_path, screenshot_path = save_and_render_iteration(
+            code=code,
+            iteration=iteration + 1,
+            workspace=workspace,
+            renderer=renderer,
+            output_path=None,
+        )
+        print(f"Iteration {iteration + 1} rendered: {screenshot_path}")
+
+    print(f"Final HTML: {html_path}")
+    print(f"Final screenshot: {screenshot_path}")
+
+
+def evaluate_existing_iterations(target_path: Path, workspace: Workspace) -> Path:
+    from revision.evaluator import evaluate_iterations
+
+    results = evaluate_iterations(target_path=target_path, iterations_dir=workspace.iterations_dir)
+    if not results:
+        raise RuntimeError(f"No iteration screenshots found in {workspace.iterations_dir}")
+    return workspace.save_evaluation(results)
+
+
+def save_and_render_iteration(
+    code: GeneratedCode,
+    iteration: int,
+    workspace: Workspace,
+    renderer: BrowserRenderer,
+    output_path: Path | None,
+) -> tuple[Path, Path]:
+    html_path = workspace.write_generated_code(code)
+    workspace.save_iteration_code(iteration=iteration, code=code)
 
     screenshot_path = renderer.capture(
         html_path=html_path,
@@ -235,3 +328,5 @@ if __name__ == "__main__":
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(1) from None
+
+

@@ -114,6 +114,10 @@ class Workspace:
     def generated_css_path(self) -> Path:
         return self.output_dir / "style.css"
 
+    @property
+    def evaluation_path(self) -> Path:
+        return self.output_dir / "evaluation.json"
+
     def write_generated_code(self, code: GeneratedCode) -> Path:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.generated_html_path.write_text(code.html, encoding="utf-8")
@@ -146,3 +150,24 @@ class Workspace:
         }
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return path
+
+    def save_evaluation(self, results: list[Any]) -> Path:
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        best = max(results, key=lambda result: result.similarity) if results else None
+        payload: dict[str, Any] = {
+            "metric": "pixel_rmse_similarity",
+            "note": "Similarity is a rough pixel-level trend signal, not a human visual correctness score.",
+            "best_iteration": best.iteration if best else None,
+            "results": [
+                {
+                    "iteration": result.iteration,
+                    "screenshot": result.screenshot,
+                    "similarity": round(result.similarity, 6),
+                    "rmse": round(result.rmse, 6),
+                }
+                for result in results
+            ],
+        }
+        self.evaluation_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return self.evaluation_path
+

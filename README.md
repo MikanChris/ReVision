@@ -6,7 +6,7 @@ ReVision recreates a static webpage from a reference screenshot, renders its own
 
 ## Current Status
 
-Phase 0, Phase 1, and Phase 2 are implemented. Phase 3 one-shot repair is available as a standalone step.
+Phase 0 through Phase 5 are implemented as CLI steps. The evaluator is a rough local pixel-level trend signal, not a human visual correctness score.
 
 ## Setup
 
@@ -91,3 +91,29 @@ output/iterations/iteration_1.html
 output/iterations/iteration_1.css
 output/iterations/iteration_1.png
 ```
+
+## Phase 4 Usage
+
+Run the full generate -> critique -> repair -> render loop from scratch:
+
+```bash
+python main.py --target "examples/Yamibuy.png" --loop 3
+```
+
+For `--loop 3`, expect one initial generation plus three critique/repair cycles.
+
+## Phase 5 Usage
+
+Evaluate existing iteration screenshots with a local pixel-level metric:
+
+```bash
+python main.py --target "examples/Yamibuy.png" --evaluate
+```
+
+Output:
+
+```text
+output/evaluation.json
+```
+
+The score is useful for trend tracking only. It should be checked against human visual judgment before making claims.
